@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="NIK.CORE.SERVICES.FILE/NIK.CORE.SERVICES.FILE.csproj" />
+  <Project Path="NIK.CORE.SERVICES.SHARED/NIK.CORE.SERVICES.SHARED.csproj" />
+</Solution>
