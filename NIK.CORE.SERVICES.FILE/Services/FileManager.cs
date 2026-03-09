@@ -7,18 +7,76 @@ using NIK.CORE.SERVICES.FILE.Dtos;
 
 namespace NIK.CORE.SERVICES.FILE.Services;
 /// <summary>
+/// Provides high-level file management operations including:
 /// 
+/// - Uploading files
+/// - Deduplicating physical storage
+/// - Retrieving file metadata
+/// - Streaming file content
+/// - Converting files to Base64
+/// - Soft deleting files
+/// 
+/// The system separates logical files (<c>FileEntry</c>) from physical storage
+/// (<c>PhysicalStorage</c>) to support file deduplication. Multiple file entries
+/// can reference the same physical file via the <c>physicalId</c>.
+/// 
+/// This class coordinates with:
+/// - <see cref="PhysicalStorageManager"/> for physical file storage metadata
+/// - <see cref="FolderManager"/> for folder path resolution
 /// </summary>
 public class FileManager
 {
+    /// <summary>
+    /// Database connection used for executing SQL queries via Dapper.
+    /// </summary>
     private readonly IDbConnection _dbConnection;
+    /// <summary>
+    /// Logger used for tracing file operations such as uploads,
+    /// downloads, deduplication events, and error diagnostics.
+    /// </summary>
     private readonly ILogger<FolderManager> _logger;
+    /// <summary>
+    /// Name of the database table storing logical file entries.
+    /// </summary>
     public static readonly string FileEntryTable = "FileEntry";
+    /// <summary>
+    /// SQL alias used for the <see cref="FileEntryTable"/> in queries.
+    /// </summary>
     public static readonly string FileEntryTableAlias = "fe";
+    /// <summary>
+    /// Configuration settings for the file manager service,
+    /// including storage root path, maximum file size, and allowed MIME types.
+    /// </summary>
     private readonly FileManagerServiceConfig _fileManagerServiceConfig;
+    /// <summary>
+    /// Service responsible for managing physical file storage metadata
+    /// and reference counting for deduplicated files.
+    /// </summary>
     private readonly PhysicalStorageManager _physicalStorageManager;
+    /// <summary>
+    /// Service responsible for folder management and path resolution.
+    /// </summary>
     private readonly FolderManager _forderManager;
-
+    /// <summary>
+    /// Initializes a new instance of the <see cref="FileManager"/> class.
+    /// </summary>
+    /// <param name="dbConnection">
+    /// Database connection used to perform queries and commands.
+    /// </param>
+    /// <param name="logger">
+    /// Logger used for monitoring file operations and debugging.
+    /// </param>
+    /// <param name="fileManagerServiceConfig">
+    /// Configuration for file storage behavior such as maximum file size
+    /// and allowed MIME types.
+    /// </param>
+    /// <param name="physicalStorageManager">
+    /// Service used to manage physical file storage records and
+    /// deduplication logic.
+    /// </param>
+    /// <param name="forderManager">
+    /// Service used to retrieve folder paths and manage folder structure.
+    /// </param>
     public FileManager(IDbConnection dbConnection, ILogger<FolderManager> logger,
         FileManagerServiceConfig fileManagerServiceConfig, 
         PhysicalStorageManager physicalStorageManager,
@@ -30,7 +88,34 @@ public class FileManager
         _physicalStorageManager = physicalStorageManager;
         _forderManager = forderManager;
     }
-
+    /// <summary>
+    /// Uploads a file to the storage system.
+    /// </summary>
+    /// <param name="request">
+    /// Upload request containing the file, folderId, and optional display name.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="FileDto"/> representing the created file entry.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when:
+    /// - File is empty
+    /// - File size exceeds the configured limit
+    /// - MIME type is not allowed
+    /// </exception>
+    /// <remarks>
+    /// The upload process performs the following steps:
+    /// 
+    /// 1. Validate file size and MIME type.
+    /// 2. Compute SHA256 hash of the file.
+    /// 3. Check if a physical file with the same hash already exists.
+    /// 4. If not, create a new physical storage record and save the file to disk.
+    /// 5. Create a logical file entry in the <c>FileEntry</c> table.
+    /// 6. Increment the reference count for the physical storage.
+    /// 
+    /// Deduplication ensures identical files are stored only once.
+    /// </remarks>
     public async Task<FileDto> UploadFileAsync(UploadFileRequest request, CancellationToken cancellationToken = default)
     {
         IFormFile file = request.File;
@@ -121,6 +206,19 @@ public class FileManager
         entryFile.RelativePath = physicalRecord.RelativePath;
         return entryFile;
     }
+    /// <summary>
+    /// Retrieves a file entry and its physical storage metadata by file ID.
+    /// </summary>
+    /// <param name="id">The unique identifier of the file entry.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="FileDto"/> if found; otherwise <c>null</c>.
+    /// </returns>
+    /// <remarks>
+    /// This method joins the <c>FileEntry</c> table with the
+    /// <c>PhysicalStorage</c> table to return both logical and
+    /// physical file information.
+    /// </remarks>
     public async Task<FileDto?> GetFileByIdAsync(string id, CancellationToken cancellation = default)
     {
         string sql = $"""
@@ -137,7 +235,20 @@ public class FileManager
         }, cancellationToken: cancellation));
         return result;
     }
-
+    /// <summary>
+    /// Retrieves all files within a specific folder.
+    /// </summary>
+    /// <param name="folderId">The identifier of the folder.</param>
+    /// <param name="skip">Number of records to skip (pagination).</param>
+    /// <param name="take">Maximum number of records to return.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A collection of <see cref="FileDto"/> objects.
+    /// </returns>
+    /// <remarks>
+    /// Results are sorted by creation date in descending order.
+    /// Only files that are not soft-deleted will be returned.
+    /// </remarks>
     public async Task<IReadOnlyCollection<FileDto>> GetAllFileByFolderIdAsync(string folderId,
         int skip = 0, int take = 50, CancellationToken cancellationToken = default)
     {
@@ -160,7 +271,24 @@ public class FileManager
         }, cancellationToken: cancellationToken));
         return result.AsList();
     }
-
+    /// <summary>
+    /// Opens a read-only stream for the specified file.
+    /// </summary>
+    /// <param name="fileId">The identifier of the file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A readable <see cref="Stream"/> for the file content.
+    /// </returns>
+    /// <exception cref="KeyNotFoundException">
+    /// Thrown when the file entry does not exist.
+    /// </exception>
+    /// <exception cref="FileNotFoundException">
+    /// Thrown when the physical file is missing from disk.
+    /// </exception>
+    /// <remarks>
+    /// This method retrieves the file metadata and then opens
+    /// the physical file stored on disk.
+    /// </remarks>
     public async Task<Stream> OpenReadStreamAsync(string fileId, CancellationToken cancellationToken = default)
     {
         FileDto? entryFile = await GetFileByIdAsync(fileId, cancellationToken);
@@ -180,7 +308,20 @@ public class FileManager
         return new FileStream(absolutePath, FileMode.Open, FileAccess.Read, 
             FileShare.ReadWrite,bufferSize: 81920, useAsync: true);
     }
-
+    /// <summary>
+    /// Retrieves a file and returns its content encoded as Base64.
+    /// </summary>
+    /// <param name="fileId">The identifier of the file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// Base64 string representation of the file content.
+    /// </returns>
+    /// <remarks>
+    /// This method loads the file stream into memory and converts
+    /// the bytes to a Base64 encoded string.
+    /// 
+    /// Warning: For large files this may consume significant memory.
+    /// </remarks>
     public async Task<string> GetFileBase64ASync(string fileId, CancellationToken cancellationToken = default)
     {
         await using var stream = await OpenReadStreamAsync(fileId, cancellationToken);
@@ -190,6 +331,22 @@ public class FileManager
         var bytes = memory.ToArray();
         return Convert.ToBase64String(bytes);
     }
+    /// <summary>
+    /// Soft deletes a file entry.
+    /// </summary>
+    /// <param name="fileId">The identifier of the file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="KeyNotFoundException">
+    /// Thrown when the file does not exist or has already been deleted.
+    /// </exception>
+    /// <remarks>
+    /// This operation performs a soft delete by setting
+    /// <c>isDeleted = true</c>.
+    /// 
+    /// The physical file will not be deleted immediately.
+    /// Physical deletion is controlled by reference counting
+    /// in <see cref="PhysicalStorageManager"/>.
+    /// </remarks>
     public async Task DeleteAsync(string fileId, CancellationToken cancellationToken = default)
     {
         string selectSql = $"""
@@ -215,19 +372,35 @@ public class FileManager
             new CommandDefinition(softDeleteSql, new { Id = fileId }, cancellationToken: cancellationToken));
     }
     /// <summary>
-    /// 
+    /// Computes the SHA256 hash of a byte array.
     /// </summary>
-    /// <param name="data"></param>
-    /// <returns></returns>
+    /// <param name="data">File data.</param>
+    /// <returns>
+    /// Hexadecimal string representation of the SHA256 hash.
+    /// </returns>
+    /// <remarks>
+    /// Used to detect duplicate files and enable storage deduplication.
+    /// </remarks>
     private static string ComputeSha256(byte[] data)
     {
         var hash = SHA256.HashData(data);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
     /// <summary>
-    /// Builds a sharded relative path to avoid too many files in one directory.
-    /// e.g. hash = "abcd1234..." → "ab/cd/abcd1234....png"
+    /// Builds a relative storage path for a file based on its hash.
     /// </summary>
+    /// <param name="hash">SHA256 hash of the file.</param>
+    /// <param name="extension">File extension.</param>
+    /// <returns>
+    /// Relative file path used for storage.
+    /// </returns>
+    /// <remarks>
+    /// The method shards the file path to avoid storing too many files
+    /// in a single directory.
+    /// 
+    /// Example:
+    /// hash = "abcd1234..." → "ab/cd/abcd1234.png"
+    /// </remarks>
     private static string BuildRelativePath(string hash, string extension)
     {
         var shard1 = hash[..2];
@@ -237,9 +410,16 @@ public class FileManager
     }
 }
 
-
+/// <summary>
+/// Helper class containing reusable SQL fragments used by
+/// <see cref="FileManager"/> queries.
+/// </summary>
 public static class FileManagerSqlHelper
 {
+    /// <summary>
+    /// SQL mapping expression used by Dapper to map database columns
+    /// to <see cref="FileDto"/> properties.
+    /// </summary>
     public static string MappingColumnToDto =>
         $"""
          {FileManager.FileEntryTableAlias}."id"                             AS ${nameof(FileDto.Id)},
@@ -254,7 +434,12 @@ public static class FileManagerSqlHelper
          {PhysicalStorageManager.PhysicalStorageTableAlias}."mimeType"     AS ${nameof(FileDto.MimeType)},
          {PhysicalStorageManager.PhysicalStorageTableAlias}."relativePath" AS ${nameof(FileDto.RelativePath)}
          """;
-
+    /// <summary>
+    /// SQL filter ensuring only non-deleted files are returned.
+    /// </summary>
+    /// <remarks>
+    /// Used to prevent soft-deleted files from appearing in queries.
+    /// </remarks>
     public static string FilterForSafeDelete => 
         $"""
          {FileManager.FileEntryTableAlias}."isDeleted" = FALSE

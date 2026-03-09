@@ -2,12 +2,22 @@
 using Dapper;
 using Microsoft.Extensions.Logging;
 using NIK.CORE.SERVICES.FILE.Dtos;
-using NIK.CORE.SERVICES.FILE.Models;
 
 namespace NIK.CORE.SERVICES.FILE.Services;
 
 /// <summary>
+/// Manages physical file storage metadata in the database.
 /// 
+/// This service provides operations for:
+/// - Retrieving physical storage records
+/// - Creating new physical storage entries
+/// - Managing reference counting for deduplicated files
+/// - Deleting storage records when no references remain
+/// - Listing stored files with pagination
+/// - Calculating total storage usage
+/// 
+/// The class uses Dapper for database access and supports
+/// file deduplication through the <c>fileHash</c> field.
 /// </summary>
 public class PhysicalStorageManager
 {
@@ -15,13 +25,28 @@ public class PhysicalStorageManager
     public static readonly string PhysicalStorageTable = "PhysicalStorage";
     public static readonly string PhysicalStorageTableAlias = "ps";
     private readonly ILogger<PhysicalStorageManager> _logger;
-
+    /// <summary>
+    /// Initializes a new instance of <see cref="PhysicalStorageManager"/>.
+    /// </summary>
+    /// <param name="connection">Database connection used for executing queries.</param>
+    /// <param name="logger">Logger instance for diagnostics and tracing.</param>
     public PhysicalStorageManager(IDbConnection connection, ILogger<PhysicalStorageManager> logger)
     {
         _connection = connection;
         _logger = logger;
     }
-
+    /// <summary>
+    /// Retrieves a physical storage record by its file hash.
+    /// </summary>
+    /// <param name="fileHash">The hash value of the file.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="PhysicalStorageDto"/> if found; otherwise <c>null</c>.
+    /// </returns>
+    /// <remarks>
+    /// This method is typically used for file deduplication to determine
+    /// whether a physical file already exists in storage.
+    /// </remarks>
     public async Task<PhysicalStorageDto?> GetByHashFileAsync(string fileHash, CancellationToken cancellation = default)
     {
         string sql = $"""
@@ -36,7 +61,14 @@ public class PhysicalStorageManager
                 );
         return result;
     }
-
+    /// <summary>
+    /// Retrieves a physical storage record by its unique identifier.
+    /// </summary>
+    /// <param name="id">The identifier of the physical storage record.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>
+    /// A <see cref="PhysicalStorageDto"/> if found; otherwise <c>null</c>.
+    /// </returns>
     public async Task<PhysicalStorageDto?> GetByIdAsync(string id, CancellationToken cancellation = default)
     {
         string sql = $"""
@@ -50,7 +82,22 @@ public class PhysicalStorageManager
             new CommandDefinition(sql, new { Id = id }, cancellationToken: cancellation));
         return result;
     }
-
+    /// <summary>
+    /// Retrieves a paginated list of physical storage records.
+    /// </summary>
+    /// <param name="mimeTypePrefix">
+    /// Optional MIME type prefix used for filtering results.
+    /// For example: <c>image</c> will return image files.
+    /// </param>
+    /// <param name="skip">Number of records to skip.</param>
+    /// <param name="take">Maximum number of records to return.</param>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>
+    /// A read-only list of <see cref="PhysicalStorageDto"/> objects.
+    /// </returns>
+    /// <remarks>
+    /// Results are ordered by creation date in descending order.
+    /// </remarks>
     public async Task<IReadOnlyList<PhysicalStorageDto>> GetAllAsync(string? mimeTypePrefix = null,
         int skip = 0,int take = 50, CancellationToken cancellation = default
         )
@@ -74,7 +121,13 @@ public class PhysicalStorageManager
                 }, cancellationToken: cancellation));
         return result.AsList();
     }
-
+    /// <summary>
+    /// Calculates the total size of all stored physical files.
+    /// </summary>
+    /// <param name="cancellation">Cancellation token.</param>
+    /// <returns>
+    /// The total storage size in bytes.
+    /// </returns>
     public async Task<long> GetTotalStorageSizeAsync(CancellationToken cancellation = default)
     {
         var sql = $"""
@@ -86,6 +139,18 @@ public class PhysicalStorageManager
             new CommandDefinition(sql, cancellationToken: cancellation));
         return result;
     }
+    /// <summary>
+    /// Increments the reference count of a physical storage record.
+    /// </summary>
+    /// <param name="id">The identifier of the physical storage record.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="KeyNotFoundException">
+    /// Thrown if the storage record does not exist.
+    /// </exception>
+    /// <remarks>
+    /// This method is used when a new logical file references the same
+    /// physical storage file.
+    /// </remarks>
     public async Task IncrementRefCountAsync(string id, CancellationToken ct = default)
     {
         string sql = $"""
@@ -101,7 +166,18 @@ public class PhysicalStorageManager
 
         _logger.LogDebug("Incremented refCount for physical storage {Id}", id);
     }
-    
+    /// <summary>
+    /// Decrements the reference count of a physical storage record.
+    /// </summary>
+    /// <param name="id">The identifier of the physical storage record.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>
+    /// <c>true</c> if the record was deleted because the reference count reached zero;
+    /// otherwise <c>false</c>.
+    /// </returns>
+    /// <remarks>
+    /// When the reference count becomes zero, the storage record is automatically deleted.
+    /// </remarks>
     public async Task<bool> DecrementRefCountAsync(string id, CancellationToken ct = default)
     {
         // Decrement; if it reaches 0 delete in same round-trip
@@ -135,6 +211,20 @@ public class PhysicalStorageManager
 
         return false;
     }
+    /// <summary>
+    /// Deletes a physical storage record.
+    /// </summary>
+    /// <param name="id">The identifier of the storage record.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="KeyNotFoundException">
+    /// Thrown if the storage record does not exist.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown if the storage record still has references.
+    /// </exception>
+    /// <remarks>
+    /// A record can only be deleted when <c>refCount</c> equals zero.
+    /// </remarks>
     public async Task DeleteAsync(string id, CancellationToken ct = default)
     {
         string checkSql = $"""
@@ -158,6 +248,27 @@ public class PhysicalStorageManager
 
         _logger.LogInformation("Deleted physical storage record {Id}", id);
     }
+    /// <summary>
+    /// Retrieves an existing physical storage record by file hash
+    /// or creates a new one if it does not exist.
+    /// </summary>
+    /// <param name="request">Request containing file metadata.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// A tuple containing:
+    /// <list type="bullet">
+    /// <item>
+    /// <description>The physical storage DTO.</description>
+    /// </item>
+    /// <item>
+    /// <description>A boolean indicating whether the record was newly created.</description>
+    /// </item>
+    /// </list>
+    /// </returns>
+    /// <remarks>
+    /// This method implements file deduplication by checking the file hash
+    /// before inserting a new record.
+    /// </remarks>
     public async Task<(PhysicalStorageDto, bool isNew)> GetOrCreateAsync(CreatePhysicalStorageRequest request 
         , CancellationToken cancellationToken = default)
     {
@@ -193,9 +304,16 @@ public class PhysicalStorageManager
     }
 }
 
-
+/// <summary>
+/// Helper class containing reusable SQL fragments for
+/// mapping database columns to <see cref="PhysicalStorageDto"/>.
+/// </summary>
 public static class PhysicalStorageSqlHelper
 {
+    /// <summary>
+    /// SQL column mapping used by Dapper to map database fields
+    /// to the <see cref="PhysicalStorageDto"/> properties.
+    /// </summary>
     public static string MappingColumnToDto 
         => $"""
             {PhysicalStorageManager.PhysicalStorageTableAlias}."id"             AS ${nameof(PhysicalStorageDto.Id)},

@@ -8,17 +8,46 @@ using Npgsql;
 
 namespace NIK.CORE.SERVICES.FILE;
 /// <summary>
-/// 
+/// Provides extension methods for registering File Manager services
+/// and API endpoints into the ASP.NET dependency injection container
+/// and routing pipeline.
 /// </summary>
+/// <remarks>
+/// This class centralizes the configuration required to enable the
+/// file management module, including:
+/// 
+/// - Dependency injection registrations
+/// - Database connection setup
+/// - Database initialization
+/// - API endpoint mappings
+/// </remarks>
 public static class DependencyInjectionExtension
 {
     extension(IServiceCollection collection)
     {
         /// <summary>
-        /// 
+        /// Registers all services required for the File Manager module.
         /// </summary>
-        /// <param name="config"></param>
-        /// <returns></returns>
+        /// <param name="config">
+        /// Configuration delegate used to configure <see cref="FileManagerServiceConfig"/>.
+        /// </param>
+        /// <returns>
+        /// The updated <see cref="IServiceCollection"/> instance.
+        /// </returns>
+        /// <remarks>
+        /// This method performs the following actions:
+        /// 
+        /// 1. Configures <see cref="FileManagerServiceConfig"/>.
+        /// 2. Registers the PostgreSQL database connection.
+        /// 3. Registers all file management related services:
+        ///    - <see cref="FileManager"/>
+        ///    - <see cref="FolderManager"/>
+        ///    - <see cref="FileShareManager"/>
+        ///    - <see cref="PhysicalStorageManager"/>
+        /// 4. Initializes the database by executing migration scripts.
+        /// 
+        /// The database initialization is executed in a background task.
+        /// </remarks>
         public IServiceCollection AddFileManagerServices(Action<FileManagerServiceConfig> config)
         {
             ArgumentNullException.ThrowIfNull(config);
@@ -42,9 +71,21 @@ public static class DependencyInjectionExtension
         }
     }
     /// <summary>
-    /// 
+    /// Registers all File Manager related API endpoints.
     /// </summary>
-    /// <param name="endpoints"></param>
+    /// <returns>
+    /// The updated <see cref="IEndpointRouteBuilder"/> instance.
+    /// </returns>
+    /// <remarks>
+    /// This method maps the API endpoints for:
+    /// 
+    /// - File management
+    /// - Folder management
+    /// - File sharing
+    /// - Physical storage management
+    /// 
+    /// Each API group is registered through its corresponding endpoint extension.
+    /// </remarks>
     extension(IEndpointRouteBuilder endpoints)
     {
         /// <summary>
@@ -63,8 +104,15 @@ public static class DependencyInjectionExtension
 }
 
 /// <summary>
-/// 
+/// Configuration options for the File Manager service.
 /// </summary>
+/// <remarks>
+/// This configuration controls how files are stored and validated,
+/// including storage location, maximum file size, and allowed MIME types.
+/// 
+/// The configuration is typically registered during application startup
+/// through <see cref="DependencyInjectionExtension.AddFileManagerServices"/>.
+/// </remarks>
 public class FileManagerServiceConfig
 {
     /// <summary>
