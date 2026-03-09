@@ -17,13 +17,18 @@ public class FileManager
     public static readonly string FileEntryTableAlias = "fe";
     private readonly FileManagerServiceConfig _fileManagerServiceConfig;
     private readonly PhysicalStorageManager _physicalStorageManager;
+    private readonly FolderManager _forderManager;
 
-    public FileManager(IDbConnection dbConnection, ILogger<FolderManager> logger, FileManagerServiceConfig fileManagerServiceConfig, PhysicalStorageManager physicalStorageManager)
+    public FileManager(IDbConnection dbConnection, ILogger<FolderManager> logger,
+        FileManagerServiceConfig fileManagerServiceConfig, 
+        PhysicalStorageManager physicalStorageManager,
+        FolderManager forderManager)
     {
         _dbConnection = dbConnection;
         _logger = logger;
         _fileManagerServiceConfig = fileManagerServiceConfig;
         _physicalStorageManager = physicalStorageManager;
+        _forderManager = forderManager;
     }
 
     public async Task<FileDto> UploadFileAsync(UploadFileRequest request, CancellationToken cancellationToken = default)
@@ -48,8 +53,73 @@ public class FileManager
             file.FileName, file.Length, fileHash);
         string extension  = Path.GetExtension(file.FileName).TrimStart('.');
         string relativePath = BuildRelativePath(fileHash, extension);
-        throw new Exception();
+        
+        var (physicalRecord, isNew) = await _physicalStorageManager.GetOrCreateAsync(new CreatePhysicalStorageRequest()
+        {
+            FileHash = fileHash,
+            FileSize = file.Length,
+            RelativePath = relativePath,
+            MimeType = mimeType,
+        }, cancellationToken);
 
+        if (isNew)
+        {
+            // find folder id 
+            var pathFromFolderId = await _forderManager.GetPathFromFolderIdAsync(request.FolderId, cancellationToken);
+            if (pathFromFolderId is null)
+                throw new ArgumentNullException(pathFromFolderId, $"Can't find folder for folderId: {request.FolderId}");   
+            var absolutePath = Path.Combine(_fileManagerServiceConfig.StorageRoot, pathFromFolderId, physicalRecord.RelativePath);
+            var directory = Path.GetDirectoryName(absolutePath)
+                ?? throw new Exception($"Can't get directory from path {absolutePath}");
+            if (!Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
+            await File.WriteAllBytesAsync(absolutePath, fileBytes, cancellationToken);
+            
+            _logger.LogInformation(
+                "Saved new physical file to {Path} ({Size} bytes)", absolutePath, file.Length);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Deduplication: reusing physical record {Id} for hash {Hash}",
+                physicalRecord.Id, fileHash);
+        }
+        var displayName = request.DisplayName
+                          ?? Path.GetFileNameWithoutExtension(file.FileName)
+                          ?? file.FileName;
+        string insertSql = $"""
+                            INSERT INTO {FileEntryTable}
+                            ("displayName", "extension", "folderId", "physicalId")
+                            VALUES (@DisplayName, @Extension, @FolderId, @PhysicalId)
+                            RETURNING 
+                                "id"            AS {nameof(FileDto.Id)},
+                                "displayName"   AS {nameof(FileDto.DisplayName)},
+                                "extension"     AS {nameof(FileDto.Extension)},
+                                "folderId"      AS {nameof(FileDto.FolderId)},
+                                "physicalId"    AS {nameof(FileDto.PhysicalId)}
+                                "isDeleted"     AS {nameof(FileDto.IsDeleted)}
+                                "createdAt"     AS {nameof(FileDto.CreatedAt)}
+                                "updatedAt"     AS {nameof(FileDto.UploadAt)};
+                           """;
+        var entryFile = await _dbConnection.QuerySingleAsync<FileDto>(new CommandDefinition(insertSql,
+            new
+            {
+                DisplayName = displayName,
+                Extension = string.IsNullOrEmpty(extension) ? null : extension,
+                FolderId = request.FolderId,
+                PhysicalId = physicalRecord.Id
+            }, cancellationToken: cancellationToken));
+        
+        await _physicalStorageManager.IncrementRefCountAsync(physicalRecord.Id, cancellationToken);
+        
+        _logger.LogInformation(
+            "FileEntry {EntryId} created → physical {PhysicalId}",
+            entryFile.Id, physicalRecord.Id);
+
+        entryFile.FileSize = physicalRecord.FileSize;
+        entryFile.MimeType = physicalRecord.MimeType;
+        entryFile.RelativePath = physicalRecord.RelativePath;
+        return entryFile;
     }
     public async Task<FileDto?> GetFileByIdAsync(string id, CancellationToken cancellation = default)
     {
@@ -163,7 +233,7 @@ public class FileManager
         var shard1 = hash[..2];
         var shard2 = hash[2..4];
         var fileName = string.IsNullOrEmpty(extension) ? hash : $"{hash}.{extension}";
-        return Path.Combine(shard1, shard2, fileName);
+        return Path.Combine(fileName);
     }
 }
 
@@ -182,7 +252,7 @@ public static class FileManagerSqlHelper
          {FileManager.FileEntryTableAlias}."updatedAt"                      AS ${nameof(FileDto.UploadAt)},
          {PhysicalStorageManager.PhysicalStorageTableAlias}."fileSize"     AS ${nameof(FileDto.FileSize)},
          {PhysicalStorageManager.PhysicalStorageTableAlias}."mimeType"     AS ${nameof(FileDto.MimeType)},
-         {PhysicalStorageManager.PhysicalStorageTableAlias}."relativePath" AS ${nameof(FileDto.RelativePath)},
+         {PhysicalStorageManager.PhysicalStorageTableAlias}."relativePath" AS ${nameof(FileDto.RelativePath)}
          """;
 
     public static string FilterForSafeDelete => 

@@ -63,5 +63,5 @@ public class FileDto
     /// <summary>
     /// Relative path of the file within the storage system.
     /// </summary>
-    public string RelativePath { get; set; }
+    public string? RelativePath { get; set; }
 }

@@ -79,14 +79,85 @@ public class PhysicalStorageManager
     {
         var sql = $"""
                   SELECT COALESCE(SUM(COALESCE("fileSize", 0)), 0)
-                  FROM ${PhysicalStorageTable};
+                  FROM {PhysicalStorageTable};
                   """;
         _logger.LogDebug("Get total storage size");
         var result = await _connection.QueryFirstOrDefaultAsync<long>(
             new CommandDefinition(sql, cancellationToken: cancellation));
         return result;
     }
+    public async Task IncrementRefCountAsync(string id, CancellationToken ct = default)
+    {
+        string sql = $"""
+                       UPDATE {PhysicalStorageTable}
+                       SET    "refCount" = "refCount" + 1
+                       WHERE  "id" = @Id;
+                       """;
+        var affected = await _connection.ExecuteAsync(
+            new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
 
+        if (affected == 0)
+            throw new KeyNotFoundException($"PhysicalStorage record '{id}' not found.");
+
+        _logger.LogDebug("Incremented refCount for physical storage {Id}", id);
+    }
+    
+    public async Task<bool> DecrementRefCountAsync(string id, CancellationToken ct = default)
+    {
+        // Decrement; if it reaches 0 delete in same round-trip
+        string decrementSql = $"""
+                                UPDATE {PhysicalStorageTable}
+                                SET    "refCount" = "refCount" - 1
+                                WHERE  "id" = @Id
+                                  AND  "refCount" > 0
+                                RETURNING "refCount" AS RefCount
+                                """;
+        
+        var newRefCount = await _connection.ExecuteScalarAsync<int?>(
+            new CommandDefinition(decrementSql, new { Id = id }, cancellationToken: ct));
+
+        if (newRefCount is null)
+        {
+            _logger.LogWarning(
+                "DecrementRefCount: physical storage {Id} not found or refCount already 0", id);
+            return false;
+        }
+
+        _logger.LogDebug("Physical storage {Id} refCount is now {RefCount}", id, newRefCount);
+
+        if (newRefCount == 0)
+        {
+            _logger.LogInformation(
+                "Physical storage {Id} has no more references – deleting record", id);
+            await DeleteAsync(id, ct);
+            return true;
+        }
+
+        return false;
+    }
+    public async Task DeleteAsync(string id, CancellationToken ct = default)
+    {
+        string checkSql = $"""
+                        SELECT "refCount" FROM {PhysicalStorageTable} WHERE "id" = @Id
+                        """;
+        var refCount = await _connection.ExecuteScalarAsync<int?>(
+            new CommandDefinition(checkSql, new { Id = id }, cancellationToken: ct));
+
+        if (refCount is null)
+            throw new KeyNotFoundException($"PhysicalStorage record '{id}' not found.");
+
+        if (refCount > 0)
+            throw new InvalidOperationException(
+                $"Cannot delete PhysicalStorage '{id}': it still has {refCount} reference(s).");
+
+        string deleteSql = $"""
+                          DELETE FROM {PhysicalStorageTable} WHERE "id" = @Id
+                          """;
+        await _connection.ExecuteAsync(
+            new CommandDefinition(deleteSql, new { Id = id }, cancellationToken: ct));
+
+        _logger.LogInformation("Deleted physical storage record {Id}", id);
+    }
     public async Task<(PhysicalStorageDto, bool isNew)> GetOrCreateAsync(CreatePhysicalStorageRequest request 
         , CancellationToken cancellationToken = default)
     {
@@ -102,7 +173,7 @@ public class PhysicalStorageManager
                      INSERT INTO {PhysicalStorageTable} AS {PhysicalStorageTableAlias} ("fileHash", "fileSize", "relativePath", "mimeType")
                      VALUES (@FileHash, @FileSize, @relativePath, @mimeType)
                      RETURNING
-                        {PhysicalStorageSqlHelper.MappingColumnToDto}
+                        {PhysicalStorageSqlHelper.MappingColumnToDto};
                      """;
         _logger.LogInformation(
             "Creating new physical storage record for hash {Hash} ({Size} bytes)",
