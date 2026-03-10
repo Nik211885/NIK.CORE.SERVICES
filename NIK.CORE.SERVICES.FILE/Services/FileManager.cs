@@ -221,6 +221,8 @@ public class FileManager
     /// </remarks>
     public async Task<FileDto?> GetFileByIdAsync(string id, CancellationToken cancellation = default)
     {
+        ArgumentNullException.ThrowIfNull(id);
+        
         string sql = $"""
                      SELECT {FileManagerSqlHelper.MappingColumnToDto}
                      FROM {FileEntryTable} {FileEntryTableAlias}
@@ -252,6 +254,7 @@ public class FileManager
     public async Task<IReadOnlyCollection<FileDto>> GetAllFileByFolderIdAsync(string folderId,
         int skip = 0, int take = 50, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(folderId);
         string sql = $"""
                       SELECT {FileManagerSqlHelper.MappingColumnToDto}
                       FROM {FileEntryTable} {FileEntryTableAlias}
@@ -291,6 +294,8 @@ public class FileManager
     /// </remarks>
     public async Task<Stream> OpenReadStreamAsync(string fileId, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(fileId);
+        
         FileDto? entryFile = await GetFileByIdAsync(fileId, cancellationToken);
         if (entryFile is null)
         {
@@ -324,6 +329,8 @@ public class FileManager
     /// </remarks>
     public async Task<string> GetFileBase64ASync(string fileId, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(fileId);
+
         await using var stream = await OpenReadStreamAsync(fileId, cancellationToken);
         using var memory = new MemoryStream();
         await stream.CopyToAsync(memory, cancellationToken);
@@ -349,6 +356,8 @@ public class FileManager
     /// </remarks>
     public async Task DeleteAsync(string fileId, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(fileId);
+        
         string selectSql = $"""
                             SELECT "physicalId" 
                             FROM {FileEntryTable} {FileEntryTableAlias}

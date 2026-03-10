@@ -49,6 +49,8 @@ public class PhysicalStorageManager
     /// </remarks>
     public async Task<PhysicalStorageDto?> GetByHashFileAsync(string fileHash, CancellationToken cancellation = default)
     {
+        ArgumentNullException.ThrowIfNull(fileHash);
+
         string sql = $"""
                        SELECT {PhysicalStorageSqlHelper.MappingColumnToDto},
                        FROM {PhysicalStorageTable} {PhysicalStorageTableAlias}     
@@ -71,6 +73,8 @@ public class PhysicalStorageManager
     /// </returns>
     public async Task<PhysicalStorageDto?> GetByIdAsync(string id, CancellationToken cancellation = default)
     {
+        ArgumentNullException.ThrowIfNull(id);
+        
         string sql = $"""
                      SELECT {PhysicalStorageSqlHelper.MappingColumnToDto},
                      FROM {PhysicalStorageTable} {PhysicalStorageTableAlias}
@@ -153,6 +157,8 @@ public class PhysicalStorageManager
     /// </remarks>
     public async Task IncrementRefCountAsync(string id, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(id);
+
         string sql = $"""
                        UPDATE {PhysicalStorageTable}
                        SET    "refCount" = "refCount" + 1
@@ -180,6 +186,8 @@ public class PhysicalStorageManager
     /// </remarks>
     public async Task<bool> DecrementRefCountAsync(string id, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(id);
+
         // Decrement; if it reaches 0 delete in same round-trip
         string decrementSql = $"""
                                 UPDATE {PhysicalStorageTable}
@@ -227,6 +235,8 @@ public class PhysicalStorageManager
     /// </remarks>
     public async Task DeleteAsync(string id, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(id);
+
         string checkSql = $"""
                         SELECT "refCount" FROM {PhysicalStorageTable} WHERE "id" = @Id
                         """;
@@ -272,6 +282,8 @@ public class PhysicalStorageManager
     public async Task<(PhysicalStorageDto, bool isNew)> GetOrCreateAsync(CreatePhysicalStorageRequest request 
         , CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
         var existing = await GetByHashFileAsync(request.FileHash, cancellationToken);
         if (existing is not null)
         {
