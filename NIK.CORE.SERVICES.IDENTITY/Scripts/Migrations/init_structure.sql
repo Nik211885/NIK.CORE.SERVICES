@@ -78,7 +78,7 @@ CREATE TABLE "UserLogins" (
 );
 
 -- UserToken: tokens for email confirmation, password reset, 2FA, etc.
-CREATE TABLE "UserToken" (
+CREATE TABLE "UserTokens" (
                              "Id"            UUID            NOT NULL DEFAULT uuid_generate_v4(),
                              "UserId"        UUID            NOT NULL,
                              "LoginProvider" VARCHAR(128)    NOT NULL,
