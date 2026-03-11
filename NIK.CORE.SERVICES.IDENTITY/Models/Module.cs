@@ -31,7 +31,10 @@ public class Module
     /// Sort order used for displaying modules
     /// </summary>
     public int SortOrder { get; set; }
-
+    /// <summary>
+    ///     Module parent 
+    /// </summary>
+    public int ModuleId { get; set; }
     /// <summary>
     /// Indicates whether the module is active
     /// </summary>

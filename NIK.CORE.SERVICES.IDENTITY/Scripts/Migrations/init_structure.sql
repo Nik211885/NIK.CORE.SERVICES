@@ -117,6 +117,7 @@ CREATE TABLE "Modules" (
                            "Name"          VARCHAR(256)    NOT NULL,
                            "Description"   TEXT            NULL,
                            "IconUrl"       TEXT            NULL,
+                            "ParentId"     UUID            NULL,
                            "SortOrder"     INT             NOT NULL DEFAULT 0,
                            "IsActive"      BOOLEAN         NOT NULL DEFAULT TRUE,
                            "IsDeleted"     BOOLEAN         NOT NULL DEFAULT FALSE,
@@ -243,6 +244,17 @@ CREATE TABLE "OrganizationFunctions" (
                                          "Id"                UUID        NOT NULL DEFAULT uuid_generate_v4(),
                                          "OrganizationId"    UUID        NOT NULL,
                                          "FunctionId"        UUID        NOT NULL,
+                                         "IsEnabled"         BOOLEAN     NOT NULL DEFAULT TRUE,
+                                         "EnabledAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                         "EnabledBy"         UUID        NULL,
+                                         "DisabledAt"        TIMESTAMPTZ NULL,
+                                         "DisabledBy"        UUID        NULL
+);
+-- OrganizationModules: enable / disable features per organization
+CREATE TABLE "OrganizationModules" (
+                                         "Id"                UUID        NOT NULL DEFAULT uuid_generate_v4(),
+                                         "OrganizationId"    UUID        NOT NULL,
+                                         "ModuleId"        UUID        NOT NULL,
                                          "IsEnabled"         BOOLEAN     NOT NULL DEFAULT TRUE,
                                          "EnabledAt"         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                          "EnabledBy"         UUID        NULL,

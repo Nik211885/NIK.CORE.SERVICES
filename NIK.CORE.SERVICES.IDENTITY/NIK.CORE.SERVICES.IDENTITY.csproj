@@ -7,9 +7,8 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <Folder Include="Apis\" />
       <Folder Include="Dtos\" />
-      <Folder Include="Services\" />
+      <Folder Include="Scripts\Seeder\" />
     </ItemGroup>
 
     <ItemGroup>
